@@ -1,0 +1,339 @@
+---
+title: "Are Tuition Costs Efiecient"
+author: "Patrick Chilufya"
+date: "May 16, 2018"
+output: html_document
+---
+## Introduction
+In this tutorial, we will examine the cost of tuition and average income by state. We will also attempt to calculate the probability of getting employed and if tuition is affordable based on the average income in every state. We will assume that all education costs are paid with student loans and not out of pocket
+
+## Part 1: Data scraping and cleaning
+We will begin data collection by scraping the College Tuition Compare, the US department of education, wikipedia and the Bureau of Labor Statistics websites
+
+
+```{r setup, include=TRUE}
+library(rvest) # library needed to scrape (or harvest) data from html web page
+```
+
+```{r nces_data_scrape }
+# url is the website with the table of interest
+url <- "https://www.collegetuitioncompare.com/state/"
+
+# table is an html tag containing the table data we need.
+nces_table <- url %>% 
+  read_html() %>%
+  html_node("table")
+nces_table
+```
+# We now extract the rows of the table that have the data we are interested in
+```{r get_rows}
+# We extract the names of the states by taking the nodes in the a tag of the html page and 
+# convert it to html text i.e vecotr text without any html tags on it. We save it in the state_rows
+states_rows <- nces_table %>% html_nodes("a")  %>%
+  html_text()
+
+
+# Since the table on the page has the last row as total, we will use vector indexing to add the
+# the total row to the list of states
+states_rows[60] <- "Total"
+states_rows
+```
+
+```{r fees}
+# Eeach row is found in the tr and td html tag. From out table, we want to extract the n
+# Column of of the table using the following snipets of code
+in_state_tuition_tab <- nces_table %>% html_nodes("tr") %>% html_nodes("td:nth-of-type(2)") %>%
+  html_text()
+
+# off campus tuition
+off_camp_tab <- nces_table %>% html_nodes("tr") %>% html_nodes("td:nth-of-type(6)") %>%
+  html_text()
+# On campus tuition
+on_camp_tab <- nces_table %>% html_nodes("tr") %>% html_nodes("td:nth-of-type(5)") %>%
+  html_text() %>% as.character()
+```
+
+```{r tuition_df, message=FALSE, warning=FALSE}
+library(utils) 
+
+# We will now create a tuition data frame by adding all the vectors we have extracted to it
+
+tuition_df <- data.frame(State=states_rows, Tuition_=in_state_tuition_tab, On_Camp_Cost=on_camp_tab, off_camp_cost=off_camp_tab)
+
+# However, the data frame is still not ready for use so we will tidy the data
+# It is important to convert data into comparable units such as characters in doubles.
+
+# Character conversion of state entities
+tuition_df$State <- as.character(tuition_df$State)
+tuition_df$Tuition <- as.character(tuition_df$Tuition)
+
+# Tuition entities are converted to double  by first removing the $ and , in the entity
+# using gsub and replacing them with and empty character then converting them to numerics
+tuition_df$Tuition <- gsub('[$,]','',tuition_df$Tuition)
+tuition_df$Tuition <- as.numeric(gsub('[$,]','',tuition_df$Tuition))
+tuition_df$On_Camp_Cost <- as.numeric(gsub('[$,]','',as.character(tuition_df$On_Camp_Cost)))
+tuition_df$off_camp_cost <- as.numeric(gsub('[$,]','',as.character(tuition_df$off_camp_cost)))
+
+
+```
+
+# Second data scrape
+Our data frame is still incomplete so we need to scrape for more data to add to it. We will now scrape for the number of graduates between the years 2018 and 2020
+```{r graduates, message=FALSE, warning=FALSE}
+library(dplyr) # This library is for operations on attributes
+library(data.table) # library needed to change attribute (column) names
+url <- "https://www.ed.gov/news/press-releases/new-state-state-college-attainment-numbers-show-progress-toward-2020-goal"
+
+graduate_tab <- url %>% read_html() %>% 
+  html_node("table") %>% html_table() %>%
+  as.data.frame()
+
+graduate_tab <- graduate_tab %>% select(X1, X6) # an operatoon on the x1 and x5 attribute
+
+# x1 and x6 are not useful attribute names, so we remove them
+graduate_tab <- graduate_tab[-1, ]
+
+# we reolace them
+setnames(graduate_tab, old=c("X1","X6"), new=c("State", "graduates_range"))
+
+```
+# Third scrape
+Extract scrape for income bby sate
+```{r income_by_state}
+url <- "https://www.myplan.com/careers/top-ten/highest-paid-states.php"
+income_df <- url %>% read_html() %>% html_nodes(".tool_description") %>%
+  html_text()
+
+# remove the last 8 entities we dont need
+income_df <- tail(income_df, -8)
+income_df <- as.data.frame(income_df)
+
+# extract state names using a sequence to extract the names that are stored in  
+# indexes (positions) of the vector
+state_names <- income_df[seq(1, nrow(income_df), 2), ]
+
+incom_by_state<- income_df[seq(2, nrow(income_df), 2), ]
+
+
+income_df <- data.frame(State=state_names, income_=incom_by_state)
+income_df$State <- as.character(income_df$State)
+income_df$income <- as.numeric(gsub('[$,]','',as.character(income_df$income)))
+
+```
+# Fourth scrape
+We find the number of jobs by state
+```{r labor_force}
+url <- "https://www.bls.gov/news.release/laus.t01.htm"
+states_df <- url %>% read_html() %>% html_node("table")  %>% html_nodes("p") %>%
+  html_text()
+
+states_df <- head(states_df, 59)
+
+num_jobs_df <- url %>% read_html() %>% html_node("tbody") %>% html_nodes("tr") %>%
+  html_nodes("td:nth-of-type(1)") %>%
+  html_text()
+
+labor_df <- data.frame(State=states_df, num_jobs=num_jobs_df )
+labor_df$State <- as.character(labor_df$State)
+labor_df$num_jobs <- as.numeric(gsub('[,]','',as.character(labor_df$num_jobs)))
+
+```
+# Creating the final data frame
+We join all data we have collected into one table using the state attribute
+```{r final_data_frame}
+final_df <-full_join(tuition_df, graduate_tab, by="State") %>% full_join(labor_df, by="State") %>%
+  full_join(income_df, by="State")
+sample_n(final_df, 10) # use the sample function to display random data from data frame
+```
+
+# Plot
+We make a plot for number of jobs vs the number of graduates by each state
+
+```{r plot, message=FALSE, warning=FALSE}
+library(ggplot2)
+plot_df <- select(final_df, State, num_jobs, graduates_range) %>% tidyr::separate(graduates_range, c("Graduate_2018", "Graduate_2020"), "[-]")
+plot_df$Graduate_2018 <- as.numeric(gsub('[,]', '', as.character(plot_df$Graduate_2018)))
+plot_df$Graduate_2020 <- as.numeric(gsub('[,]', '', as.character(plot_df$Graduate_2020)))
+plot_df %>% ggplot(aes(x=Graduate_2018, y=num_jobs)) + geom_smooth() +
+  labs(title="Number of Jobs vs Number of Graduates",
+         y = "Jobs",
+         x = "Graduates")
+```
+
+
+
+## Part 2: Data wrangling and EDA
+We calculate the probability of employment for each state. Notice that the probability in this case is greater than one. That is because we have not taken into consideration the number of individuals that are already employed. This would require an additional scrape or data set analysis to find the number of individuals already employed
+```{r probability_of_employment}
+# We use the mutate function to create a new attrinute that represents the probability
+plot_df <- plot_df %>% mutate(prob=num_jobs/Graduate_2018) %>%
+  select(State, prob)
+sample_n(plot_df, 10)
+```
+
+We will now standardize tuition cost for both on campus and off campus students for a period of 4 years and also determine if tuition is affordable given a 4 year period at a certain income
+```{r standardize_tuition}
+library(ggplot2)
+standardized_df <- final_df %>%
+  mutate(avg_camp_tuiton = mean(Tuition + On_Camp_Cost, na.rm = TRUE)*4, avg_off_camp_tuition = mean(Tuition+off_camp_cost, na.rm = TRUE)*4, four_year_income = income*4) %>%
+  mutate(sd_onca_tuition=sd(Tuition+On_Camp_Cost, na.rm = TRUE), sd_offca_tuition = sd(Tuition+off_camp_cost, na.rm = TRUE)) %>%
+  mutate(z_oct = (((Tuition+On_Camp_Cost)*4)-avg_camp_tuiton)/sd_onca_tuition) %>%
+  mutate(z_ofct = (((Tuition+off_camp_cost)*4)-avg_off_camp_tuition)/sd_offca_tuition)%>%
+  mutate(aff = four_year_income - ((Tuition+On_Camp_Cost)*4)) %>%
+  mutate(is_aff=ifelse(aff>0, "yes", "no")) %>%
+  select(State, four_year_income, is_aff, z_oct, z_ofct)
+  
+sample_n(standardized_df, 10)
+
+```
+
+```{r plot_standardized_data} 
+standardized_df %>% ggplot(aes(x=four_year_income, y=z_oct)) + 
+  geom_point() +geom_smooth()+
+  ylab("Standardized Tuition") +
+  xlab("Four Year Income") +
+  ggtitle("Standardized Tuition vs Four year Income")
+```
+
+## Regression
+
+We will collect income data accross a period of time.For this data. We will scrape a wikipedia page for incomes between 2011 and 2015. 
+```{r for_reg}
+library(tidyr)
+library(ggplot2)
+url <- "https://en.wikipedia.org/wiki/List_of_U.S._states_by_income"
+
+new_incomes <- url %>% read_html() %>% html_node(".wikitable") %>% html_table()
+
+# The table has entites as attributes so we use the gather function to rearrange the table
+new_incomes <- new_incomes %>% gather(year, value=Income, '2015':'2011') 
+new_incomes$year <- as.numeric(new_incomes$year)
+new_incomes$Income <- as.numeric(gsub('[$,]', '',new_incomes$Income))
+
+```
+
+# Violin plot
+Our null hypothes is that there is a relationship between income and year
+```{r plot_income_accross_years}
+ggplot(data=new_incomes, aes(x=factor(year), y=Income)) + geom_violin()
+```
+# Linear Fit
+```{r linear_regression_fit}
+library(tidyr)
+library(gapminder)
+auto_fit <- lm(Income~year, data =new_incomes )
+auto_fit %>% broom::tidy()
+```
+# Hypothesis testing
+Using an alpha value of 0.05, we do not reject the null hypothesis. Our p value indicates a relationship between the income and year. Income increases by 1321.67 every year
+```{r inncome_vs_year_plot}
+new_fit_df <- lm(Income~year, data =new_incomes ) %>%
+broom::augment() %>%
+inner_join(new_incomes, by=c('year', 'Income'))
+
+new_fit_df %>%
+ggplot(aes(x=State, y=.resid)) +
+geom_point() +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1)) +
+labs(title="Model redidual vs State ",x="State", y="model redidual")
+```
+# Inference from plot
+Our plot indicates that data is randomly scattered around the horizontal axis, therefore, a linear regression model is appropriate for this data
+```{r linear_model_fit}
+new_fit_df %>% ggplot(aes(x = year, y = Income, color=State)) +
+geom_point() +
+geom_smooth(method=lm)+
+labs(title="Income vs Year ",x="Year", y="Income")
+```
+
+# An interaction fit
+```{r linear_regression_model_with_state}
+interaction_fit <- lm(Income~year*State, data =new_incomes )
+head(interaction_fit %>% broom::tidy(), 10)
+```
+## Classification
+
+For classification, we will use the new_incomes data frame created in the regression. Can we predict if income will increase or decrease a year from 2015". Let's build a Random Forest classifer using quarterly differences after data standardization for years 2014-2015. We will standardize income for each state
+```{r classification}
+library(tidyr)
+library(dplyr)
+
+stdzd_df <- new_incomes %>% group_by(State) %>%
+  mutate(mean_inc = mean(Income)) %>%
+mutate(sd_inc = sd(Income)) %>%
+mutate(z_inc = (Income - mean_inc) / sd_inc) %>%
+ungroup()
+
+# To train our model we need a table with one row per state, and attributes corresponding to differences # in quarterly income. We will do this in stages, first we turn the tidy dataset into a wide dataset    # using tidyr::spread then create a dataframe containing the differences we use as features.
+
+wide_df <- stdzd_df %>% select(State, year, z_inc) %>% spread(year,z_inc)
+predictor_df <- new_incomes %>% spread(year, Income) 
+predictor_df <- predictor_df %>% mutate(diff=predictor_df$`2015`- predictor_df$`2014`) %>%
+  mutate(Direction=ifelse(diff>0, "up", "down"))
+
+
+```
+
+# Now, we turn this into quarterly differences
+```{r quarterly_differences}
+
+matrix_1 <- wide_df %>%
+  select(-State) %>%
+  as.matrix() %>%
+  .[,-1]
+
+
+matrix_2 <- wide_df %>%
+select(-State) %>%
+as.matrix() %>%
+.[,-ncol(.)]
+
+
+diff_df <- (matrix_1 - matrix_2) %>%
+magrittr::set_colnames(NULL) %>%
+as_data_frame() %>%
+mutate(State = wide_df$State)
+
+# Finally, add the outcome we want to predict from the predictor_df data frame we created previously.
+# Classifier_df is our final data frame
+
+classifier_df <- diff_df %>%
+inner_join(predictor_df %>% select(State, Direction), by="State") %>%
+mutate(Direction=factor(Direction, levels=c("down", "up")))
+
+```
+# Now split up the data set into training regions and testing regions (using 80/20 random split).
+```{r random_forest, message=FALSE, warning=FALSE}
+library(randomForest)
+set.seed(1234)
+test_random_forest_df <- classifier_df %>%
+  group_by(Direction) %>%
+  sample_frac(.2) %>%
+  ungroup()
+
+train_random_forest_df <- classifier_df %>%
+anti_join(test_random_forest_df, by="State")
+
+rf <- randomForest(Direction~., data=train_random_forest_df %>% select(-State))
+rf
+```
+# Now, let's make predictions on the held out test set
+```{r predictions}
+test_predictions <- predict(rf, newdata=test_random_forest_df %>% select(-State))
+table(pred=test_predictions, observed=test_random_forest_df$Direction)
+
+```
+# We make an ROC curve
+```{r AUROC_curve}
+library(ROCR)
+library(ISLR)
+library(cvTools)
+
+standardzd_pred <- predict(rf, type="prob", newdata = classifier_df %>%select(-State))
+stadardzd_prediciton <- prediction(standardzd_pred[,"up"], classifier_df$Direction) 
+auc <- unlist(performance(stadardzd_prediciton,"auc")@y.values)
+plot(performance(stadardzd_prediciton, "tpr", "fpr"), main=paste("LDA AUROC=", round(auc, 2)), lwd=1.4, cex.lab=1.7, cex.main=1.5)
+```
+
+## Conclusion
+Based on our prediction and ROC curve, we can conclude that income will increase in the year following 2015. 
